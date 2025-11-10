@@ -36,101 +36,104 @@ module.exports = async (req, res) => {
 
     const BASE_URL = 'https://api.searchad.naver.com';
     const API_PATH = '/stat-reports';
-    const timestamp = Date.now().toString();
 
-    // StatReport Job 생성 (reportTp 사용)
-    const postSignature = generateSignature(timestamp, 'POST', API_PATH, secretKey);
-    
-    const reportJobRequest = {
-      reportTp: 'AD',  // ✅ reportTp 사용
-      statDt: startDate,
-      statEdDt: endDate
-    };
+    // 여러 Report Type 시도
+    const reportTypes = ['AD', 'AD_DETAIL', 'EXPKEYWORD', 'ADEXTENSION'];
+    const results = [];
 
-    const createResponse = await axios.post(`${BASE_URL}${API_PATH}`, reportJobRequest, {
-      headers: {
-        'X-API-KEY': apiKey,
-        'X-CUSTOMER': customerId,
-        'X-TIMESTAMP': timestamp,
-        'X-SIGNATURE': postSignature,
-        'Content-Type': 'application/json; charset=UTF-8'
-      }
-    });
+    for (const reportTp of reportTypes) {
+      try {
+        const timestamp = Date.now().toString();
+        const postSignature = generateSignature(timestamp, 'POST', API_PATH, secretKey);
+        
+        const reportJobRequest = {
+          reportTp: reportTp,
+          statDt: startDate,
+          statEdDt: endDate
+        };
 
-    const reportJobId = createResponse.data.id || createResponse.data.reportJobId;
-    let status = createResponse.data.status;
+        const createResponse = await axios.post(`${BASE_URL}${API_PATH}`, reportJobRequest, {
+          headers: {
+            'X-API-KEY': apiKey,
+            'X-CUSTOMER': customerId,
+            'X-TIMESTAMP': timestamp,
+            'X-SIGNATURE': postSignature,
+            'Content-Type': 'application/json; charset=UTF-8'
+          }
+        });
 
-    if (!reportJobId) {
-      return res.status(500).json({
-        success: false,
-        error: 'Report Job ID not found',
-        response: createResponse.data
-      });
-    }
+        const reportJobId = createResponse.data.id || createResponse.data.reportJobId;
+        let status = createResponse.data.status;
 
-    // Report 완료 대기
-    let attempts = 0;
-    const maxAttempts = 20;
-
-    while ((status === 'REGIST' || status === 'RUNNING') && attempts < maxAttempts) {
-      attempts++;
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      const getTimestamp = Date.now().toString();
-      const getPath = `${API_PATH}/${reportJobId}`;
-      const getSignature = generateSignature(getTimestamp, 'GET', getPath, secretKey);
-
-      const getResponse = await axios.get(`${BASE_URL}${getPath}`, {
-        headers: {
-          'X-API-KEY': apiKey,
-          'X-CUSTOMER': customerId,
-          'X-TIMESTAMP': getTimestamp,
-          'X-SIGNATURE': getSignature,
-          'Content-Type': 'application/json; charset=UTF-8'
-        }
-      });
-
-      status = getResponse.data.status;
-
-      if (status === 'COMPLETE' || status === 'BUILT') {
-        return res.status(200).json({
-          success: true,
-          period: {
-            year: year,
-            month: month,
-            startDate: startDate,
-            endDate: endDate
-          },
+        results.push({
+          reportType: reportTp,
+          jobCreated: true,
           reportJobId: reportJobId,
-          downloadUrl: getResponse.data.downloadUrl,
-          status: status,
-          data: getResponse.data,
-          message: 'Ad performance report ready'
+          initialStatus: status
         });
-      } else if (status === 'ERROR' || status === 'FAILED') {
-        return res.status(500).json({
-          success: false,
-          error: 'Report generation failed',
-          status: status,
-          details: getResponse.data,
-          period: { startDate, endDate }
-        });
-      } else if (status === 'NONE') {
-        return res.status(200).json({
-          success: false,
-          message: 'No data available for this period',
-          status: status,
-          period: { startDate, endDate }
+
+        // 성공하면 상태 확인
+        if (reportJobId) {
+          await new Promise(resolve => setTimeout(resolve, 3000));
+
+          const getTimestamp = Date.now().toString();
+          const getPath = `${API_PATH}/${reportJobId}`;
+          const getSignature = generateSignature(getTimestamp, 'GET', getPath, secretKey);
+
+          const getResponse = await axios.get(`${BASE_URL}${getPath}`, {
+            headers: {
+              'X-API-KEY': apiKey,
+              'X-CUSTOMER': customerId,
+              'X-TIMESTAMP': getTimestamp,
+              'X-SIGNATURE': getSignature,
+              'Content-Type': 'application/json; charset=UTF-8'
+            }
+          });
+
+          status = getResponse.data.status;
+          results[results.length - 1].finalStatus = status;
+          results[results.length - 1].downloadUrl = getResponse.data.downloadUrl;
+
+          // 성공한 리포트 찾으면 즉시 반환
+          if (status === 'COMPLETE' || status === 'BUILT') {
+            return res.status(200).json({
+              success: true,
+              period: {
+                year: year,
+                month: month,
+                startDate: startDate,
+                endDate: endDate
+              },
+              reportType: reportTp,
+              reportJobId: reportJobId,
+              downloadUrl: getResponse.data.downloadUrl,
+              status: status,
+              message: `${reportTp} report ready`,
+              allAttempts: results
+            });
+          }
+        }
+
+      } catch (error) {
+        results.push({
+          reportType: reportTp,
+          jobCreated: false,
+          error: error.response?.data || error.message
         });
       }
     }
 
-    return res.status(500).json({
+    // 모든 시도 결과 반환
+    return res.status(200).json({
       success: false,
-      error: 'Timeout waiting for report',
-      attempts: attempts,
-      lastStatus: status,
-      period: { startDate, endDate }
+      message: 'Tried all report types',
+      period: {
+        year: year,
+        month: month,
+        startDate: startDate,
+        endDate: endDate
+      },
+      results: results
     });
 
   } catch (error) {
