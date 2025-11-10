@@ -47,7 +47,6 @@ async function getStats(BASE_URL, id, timeRange, apiKey, customerId, secretKey) 
 
     const data = response.data;
     
-    // data 배열에서 일별 데이터 합산
     if (data.data && Array.isArray(data.data) && data.data.length > 0) {
       const totals = data.data.reduce((sum, day) => ({
         salesAmt: sum.salesAmt + (day.salesAmt || 0),
@@ -70,7 +69,6 @@ async function getStats(BASE_URL, id, timeRange, apiKey, customerId, secretKey) 
       };
     }
 
-    // summaryStat 방식 (fallback)
     let stats = null;
     if (data.summaryStat && data.summaryStat.data && data.summaryStat.data.length > 0) {
       stats = data.summaryStat.data[0];
@@ -126,7 +124,6 @@ module.exports = async (req, res) => {
 
     const BASE_URL = 'https://api.searchad.naver.com';
 
-    // 캠페인 목록 조회
     const ts1 = Date.now().toString();
     const campaignsPath = '/ncc/campaigns';
     const sig1 = generateSignature(ts1, 'GET', campaignsPath, secretKey);
@@ -144,7 +141,6 @@ module.exports = async (req, res) => {
     const campaigns = campaignsResponse.data;
     const results = [];
 
-    // 모든 캠페인 조회
     for (const campaign of campaigns) {
       const campaignId = campaign.nccCampaignId;
 
@@ -206,7 +202,6 @@ module.exports = async (req, res) => {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
 
-    // 전체 합계
     const totalPeriod1 = results.reduce((sum, c) => ({
       cost: sum.cost + c.period1.cost,
       clicks: sum.clicks + c.period1.clicks,
@@ -220,6 +215,57 @@ module.exports = async (req, res) => {
       impressions: sum.impressions + c.period2.impressions,
       conversions: sum.conversions + c.period2.conversions
     }), { cost: 0, clicks: 0, impressions: 0, conversions: 0 });
+
+    // 유형별 그룹핑
+    const campaignTypes = {
+      '01': { name: '파워링크', campaigns: [] },
+      '02': { name: '브랜드검색', campaigns: [] },
+      '03': { name: '파워컨텐츠', campaigns: [] },
+      '04': { name: '쇼핑검색', campaigns: [] },
+      '06': { name: '플레이스', campaigns: [] }
+    };
+
+    results.forEach(campaign => {
+      const typeCode = campaign.campaignId.split('-')[2];
+      if (campaignTypes[typeCode]) {
+        campaignTypes[typeCode].campaigns.push(campaign);
+      }
+    });
+
+    // 유형별 합계
+    const byType = {};
+    Object.keys(campaignTypes).forEach(typeCode => {
+      const typeCampaigns = campaignTypes[typeCode].campaigns;
+      if (typeCampaigns.length > 0) {
+        const p1Total = typeCampaigns.reduce((sum, c) => ({
+          cost: sum.cost + c.period1.cost,
+          clicks: sum.clicks + c.period1.clicks,
+          impressions: sum.impressions + c.period1.impressions,
+          conversions: sum.conversions + c.period1.conversions
+        }), { cost: 0, clicks: 0, impressions: 0, conversions: 0 });
+
+        const p2Total = typeCampaigns.reduce((sum, c) => ({
+          cost: sum.cost + c.period2.cost,
+          clicks: sum.clicks + c.period2.clicks,
+          impressions: sum.impressions + c.period2.impressions,
+          conversions: sum.conversions + c.period2.conversions
+        }), { cost: 0, clicks: 0, impressions: 0, conversions: 0 });
+
+        byType[campaignTypes[typeCode].name] = {
+          campaignCount: typeCampaigns.length,
+          period1: p1Total,
+          period2: p2Total,
+          comparison: {
+            costChange: p2Total.cost - p1Total.cost,
+            costChangePercent: calculateChange(p1Total.cost, p2Total.cost),
+            clicksChange: p2Total.clicks - p1Total.clicks,
+            clicksChangePercent: calculateChange(p1Total.clicks, p2Total.clicks),
+            impressionsChange: p2Total.impressions - p1Total.impressions,
+            impressionsChangePercent: calculateChange(p1Total.impressions, p2Total.impressions)
+          }
+        };
+      }
+    });
 
     return res.status(200).json({
       success: true,
@@ -246,7 +292,8 @@ module.exports = async (req, res) => {
           impressionsChange: totalPeriod2.impressions - totalPeriod1.impressions,
           impressionsChangePercent: calculateChange(totalPeriod1.impressions, totalPeriod2.impressions)
         }
-      }
+      },
+      byType: byType
     });
 
   } catch (error) {
