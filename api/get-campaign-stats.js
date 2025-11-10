@@ -38,11 +38,11 @@ module.exports = async (req, res) => {
     const API_PATH = '/stat-reports';
     const timestamp = Date.now().toString();
 
-    // StatReport Job 생성 (올바른 형식)
+    // StatReport Job 생성 (reportTp 사용)
     const postSignature = generateSignature(timestamp, 'POST', API_PATH, secretKey);
     
     const reportJobRequest = {
-      item: 'AD',  // ✅ "item" 키 사용!
+      reportTp: 'AD',  // ✅ reportTp 사용
       statDt: startDate,
       statEdDt: endDate
     };
@@ -57,7 +57,7 @@ module.exports = async (req, res) => {
       }
     });
 
-    const reportJobId = createResponse.data.id;
+    const reportJobId = createResponse.data.id || createResponse.data.reportJobId;
     let status = createResponse.data.status;
 
     if (!reportJobId) {
@@ -92,7 +92,7 @@ module.exports = async (req, res) => {
 
       status = getResponse.data.status;
 
-      if (status === 'BUILT') {
+      if (status === 'COMPLETE' || status === 'BUILT') {
         return res.status(200).json({
           success: true,
           period: {
@@ -104,13 +104,15 @@ module.exports = async (req, res) => {
           reportJobId: reportJobId,
           downloadUrl: getResponse.data.downloadUrl,
           status: status,
+          data: getResponse.data,
           message: 'Ad performance report ready'
         });
-      } else if (status === 'ERROR') {
+      } else if (status === 'ERROR' || status === 'FAILED') {
         return res.status(500).json({
           success: false,
           error: 'Report generation failed',
           status: status,
+          details: getResponse.data,
           period: { startDate, endDate }
         });
       } else if (status === 'NONE') {
