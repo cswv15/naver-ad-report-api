@@ -19,23 +19,19 @@ function formatDate(year, month) {
 
 async function getStats(BASE_URL, id, timeRange, apiKey, customerId, secretKey) {
   const timestamp = Date.now().toString();
+  const path = '/stats';  // Query parameter 제외!
   
-  // Query parameters
+  // 서명 생성 (Query parameter 없이)
+  const signature = generateSignature(timestamp, 'GET', path, secretKey);
+
   const params = {
     id: id,
     fields: '["impCnt","clkCnt","salesAmt","ctr","cpc","ccnt"]',
     timeRange: JSON.stringify(timeRange)
   };
 
-  // Query string 생성 (서명용)
-  const queryString = new URLSearchParams(params).toString();
-  const pathWithQuery = `/stats?${queryString}`;
-  
-  // 서명 생성 (Query string 포함)
-  const signature = generateSignature(timestamp, 'GET', pathWithQuery, secretKey);
-
   try {
-    const response = await axios.get(`${BASE_URL}/stats`, {
+    const response = await axios.get(`${BASE_URL}${path}`, {
       params: params,
       headers: {
         'X-API-KEY': apiKey,
@@ -63,7 +59,8 @@ async function getStats(BASE_URL, id, timeRange, apiKey, customerId, secretKey) 
         impressions: parseInt(stats.impCnt || 0),
         conversions: parseInt(stats.ccnt || 0),
         ctr: parseFloat(stats.ctr || 0),
-        cpc: parseInt(stats.cpc || 0)
+        cpc: parseInt(stats.cpc || 0),
+        rawData: data
       };
     }
 
@@ -156,7 +153,7 @@ module.exports = async (req, res) => {
       },
       stats1Response: stats1,
       stats2Response: stats2,
-      message: 'Testing with query string in signature'
+      message: 'Testing without query string in signature (like KeywordPurple)'
     });
 
   } catch (error) {
