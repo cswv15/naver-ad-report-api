@@ -17,15 +17,59 @@ function formatDate(year, month) {
   return { startDate, endDate };
 }
 
-async function makeRequest(url, params, headers) {
+function calculateChange(oldVal, newVal) {
+  if (oldVal === 0) return newVal > 0 ? 100 : 0;
+  return ((newVal - oldVal) / oldVal * 100).toFixed(2);
+}
+
+async function getStats(BASE_URL, id, timeRange, apiKey, customerId, secretKey) {
+  const timestamp = Date.now().toString();
+  const path = '/stats';
+  const signature = generateSignature(timestamp, 'GET', path, secretKey);
+
   try {
-    const response = await axios.get(url, { params, headers });
-    return { success: true, data: response.data };
+    const response = await axios.get(`${BASE_URL}${path}`, {
+      params: {
+        id: id,
+        fields: '["impCnt","clkCnt","salesAmt","ctr","cpc","ccnt"]',
+        timeRange: JSON.stringify(timeRange)
+      },
+      headers: {
+        'X-API-KEY': apiKey,
+        'X-CUSTOMER': customerId,
+        'X-TIMESTAMP': timestamp,
+        'X-SIGNATURE': signature,
+        'Content-Type': 'application/json; charset=UTF-8'
+      }
+    });
+
+    const data = response.data;
+    
+    // summaryStat 또는 dailyStat에서 데이터 추출
+    let stats = null;
+    if (data.summaryStat && data.summaryStat.data && data.summaryStat.data.length > 0) {
+      stats = data.summaryStat.data[0];
+    } else if (data.dailyStat && data.dailyStat.summary) {
+      stats = data.dailyStat.summary;
+    }
+
+    if (stats) {
+      return {
+        cost: parseInt(stats.salesAmt || 0),
+        clicks: parseInt(stats.clkCnt || 0),
+        impressions: parseInt(stats.impCnt || 0),
+        conversions: parseInt(stats.ccnt || 0),
+        ctr: parseFloat(stats.ctr || 0),
+        cpc: parseInt(stats.cpc || 0)
+      };
+    }
+
+    return { cost: 0, clicks: 0, impressions: 0, conversions: 0, ctr: 0, cpc: 0 };
+
   } catch (error) {
     return { 
-      success: false, 
       error: error.response?.data || error.message,
-      status: error.response?.status
+      cost: 0, clicks: 0, impressions: 0, conversions: 0, ctr: 0, cpc: 0
     };
   }
 }
@@ -55,153 +99,124 @@ module.exports = async (req, res) => {
     const campaignsPath = '/ncc/campaigns';
     const sig1 = generateSignature(ts1, 'GET', campaignsPath, secretKey);
 
-    const campaignsResult = await makeRequest(
-      `${BASE_URL}${campaignsPath}`,
-      {},
-      {
+    const campaignsResponse = await axios.get(`${BASE_URL}${campaignsPath}`, {
+      headers: {
         'X-API-KEY': apiKey,
         'X-CUSTOMER': customerId,
         'X-TIMESTAMP': ts1,
         'X-SIGNATURE': sig1,
         'Content-Type': 'application/json; charset=UTF-8'
       }
-    );
+    });
 
-    if (!campaignsResult.success) {
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to get campaigns',
-        details: campaignsResult.error
-      });
-    }
-
-    const campaigns = campaignsResult.data;
+    const campaigns = campaignsResponse.data;
     const results = [];
 
-    // STEP 2: 각 캠페인의 AdGroup 조회 및 통계
-    for (const campaign of campaigns.slice(0, 3)) { // 처음 3개만 테스트
+    // STEP 2: 각 캠페인의 통계 조회
+    for (const campaign of campaigns) {
       const campaignId = campaign.nccCampaignId;
 
-      // AdGroup 목록 조회
-      const ts2 = Date.now().toString();
-      const adgroupsPath = '/ncc/adgroups';
-      const sig2 = generateSignature(ts2, 'GET', adgroupsPath, secretKey);
-
-      const adgroupsResult = await makeRequest(
-        `${BASE_URL}${adgroupsPath}`,
-        { nccCampaignId: campaignId },
-        {
-          'X-API-KEY': apiKey,
-          'X-CUSTOMER': customerId,
-          'X-TIMESTAMP': ts2,
-          'X-SIGNATURE': sig2,
-          'Content-Type': 'application/json; charset=UTF-8'
-        }
+      // Period 1 통계
+      const stats1 = await getStats(
+        BASE_URL,
+        campaignId,
+        { since: period1.startDate, until: period1.endDate },
+        apiKey,
+        customerId,
+        secretKey
       );
 
-      if (!adgroupsResult.success) {
-        results.push({
-          campaignId: campaignId,
-          campaignName: campaign.name,
-          error: 'Failed to get adgroups',
-          details: adgroupsResult.error
-        });
-        continue;
-      }
+      await new Promise(resolve => setTimeout(resolve, 100));
 
-      const adgroups = adgroupsResult.data;
-
-      // 각 AdGroup의 통계 조회
-      let totalStats1 = { cost: 0, clicks: 0, impressions: 0 };
-      let totalStats2 = { cost: 0, clicks: 0, impressions: 0 };
-
-      for (const adgroup of adgroups.slice(0, 5)) { // AdGroup 5개만
-        const adgroupId = adgroup.nccAdgroupId;
-
-        // Period 1 통계
-        const ts3 = Date.now().toString();
-        const statsPath = `/stats`;
-        const sig3 = generateSignature(ts3, 'GET', statsPath, secretKey);
-
-        const stats1 = await makeRequest(
-          `${BASE_URL}${statsPath}`,
-          {
-            ids: adgroupId,
-            fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt']),
-            timeRange: JSON.stringify({
-              since: period1.startDate,
-              until: period1.endDate
-            })
-          },
-          {
-            'X-API-KEY': apiKey,
-            'X-CUSTOMER': customerId,
-            'X-TIMESTAMP': ts3,
-            'X-SIGNATURE': sig3,
-            'Content-Type': 'application/json; charset=UTF-8'
-          }
-        );
-
-        if (stats1.success && stats1.data) {
-          totalStats1.cost += parseInt(stats1.data.salesAmt || 0);
-          totalStats1.clicks += parseInt(stats1.data.clkCnt || 0);
-          totalStats1.impressions += parseInt(stats1.data.impCnt || 0);
-        }
-
-        // Period 2 통계
-        const ts4 = Date.now().toString();
-        const sig4 = generateSignature(ts4, 'GET', statsPath, secretKey);
-
-        const stats2 = await makeRequest(
-          `${BASE_URL}${statsPath}`,
-          {
-            ids: adgroupId,
-            fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt']),
-            timeRange: JSON.stringify({
-              since: period2.startDate,
-              until: period2.endDate
-            })
-          },
-          {
-            'X-API-KEY': apiKey,
-            'X-CUSTOMER': customerId,
-            'X-TIMESTAMP': ts4,
-            'X-SIGNATURE': sig4,
-            'Content-Type': 'application/json; charset=UTF-8'
-          }
-        );
-
-        if (stats2.success && stats2.data) {
-          totalStats2.cost += parseInt(stats2.data.salesAmt || 0);
-          totalStats2.clicks += parseInt(stats2.data.clkCnt || 0);
-          totalStats2.impressions += parseInt(stats2.data.impCnt || 0);
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+      // Period 2 통계
+      const stats2 = await getStats(
+        BASE_URL,
+        campaignId,
+        { since: period2.startDate, until: period2.endDate },
+        apiKey,
+        customerId,
+        secretKey
+      );
 
       results.push({
         campaignId: campaignId,
         campaignName: campaign.name,
-        adgroupCount: adgroups.length,
-        period1: totalStats1,
-        period2: totalStats2,
+        period1: {
+          year: year1,
+          month: month1,
+          cost: stats1.cost,
+          clicks: stats1.clicks,
+          impressions: stats1.impressions,
+          conversions: stats1.conversions,
+          ctr: stats1.ctr,
+          cpc: stats1.cpc
+        },
+        period2: {
+          year: year2,
+          month: month2,
+          cost: stats2.cost,
+          clicks: stats2.clicks,
+          impressions: stats2.impressions,
+          conversions: stats2.conversions,
+          ctr: stats2.ctr,
+          cpc: stats2.cpc
+        },
         comparison: {
-          costChange: totalStats2.cost - totalStats1.cost,
-          clicksChange: totalStats2.clicks - totalStats1.clicks,
-          impressionsChange: totalStats2.impressions - totalStats1.impressions
+          costChange: stats2.cost - stats1.cost,
+          costChangePercent: calculateChange(stats1.cost, stats2.cost),
+          clicksChange: stats2.clicks - stats1.clicks,
+          clicksChangePercent: calculateChange(stats1.clicks, stats2.clicks),
+          impressionsChange: stats2.impressions - stats1.impressions,
+          impressionsChangePercent: calculateChange(stats1.impressions, stats2.impressions),
+          conversionsChange: stats2.conversions - stats1.conversions,
+          conversionsChangePercent: calculateChange(stats1.conversions, stats2.conversions)
         }
       });
+
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
+
+    // 전체 합계
+    const totalPeriod1 = results.reduce((sum, c) => ({
+      cost: sum.cost + c.period1.cost,
+      clicks: sum.clicks + c.period1.clicks,
+      impressions: sum.impressions + c.period1.impressions,
+      conversions: sum.conversions + c.period1.conversions
+    }), { cost: 0, clicks: 0, impressions: 0, conversions: 0 });
+
+    const totalPeriod2 = results.reduce((sum, c) => ({
+      cost: sum.cost + c.period2.cost,
+      clicks: sum.clicks + c.period2.clicks,
+      impressions: sum.impressions + c.period2.impressions,
+      conversions: sum.conversions + c.period2.conversions
+    }), { cost: 0, clicks: 0, impressions: 0, conversions: 0 });
 
     return res.status(200).json({
       success: true,
-      period1: { year: year1, month: month1 },
-      period2: { year: year2, month: month2 },
+      period1: {
+        year: year1,
+        month: month1,
+        dateRange: `${period1.startDate} ~ ${period1.endDate}`
+      },
+      period2: {
+        year: year2,
+        month: month2,
+        dateRange: `${period2.startDate} ~ ${period2.endDate}`
+      },
       totalCampaigns: campaigns.length,
-      testedCampaigns: results.length,
       campaigns: results,
-      message: 'Testing with AdGroup-level stats'
+      totals: {
+        period1: totalPeriod1,
+        period2: totalPeriod2,
+        comparison: {
+          costChange: totalPeriod2.cost - totalPeriod1.cost,
+          costChangePercent: calculateChange(totalPeriod1.cost, totalPeriod2.cost),
+          clicksChange: totalPeriod2.clicks - totalPeriod1.clicks,
+          clicksChangePercent: calculateChange(totalPeriod1.clicks, totalPeriod2.clicks),
+          impressionsChange: totalPeriod2.impressions - totalPeriod1.impressions,
+          impressionsChangePercent: calculateChange(totalPeriod1.impressions, totalPeriod2.impressions)
+        }
+      }
     });
 
   } catch (error) {
