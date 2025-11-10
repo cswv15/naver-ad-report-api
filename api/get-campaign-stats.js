@@ -34,7 +34,8 @@ module.exports = async (req, res) => {
 
     const { startDate, endDate } = formatDate(parseInt(year), parseInt(month));
 
-    // 네이버 검색광고 API 설정
+    // ✅ 올바른 Base URL
+    const BASE_URL = 'https://api.searchad.naver.com';
     const timestamp = Date.now().toString();
     const method = 'GET';
     
@@ -48,7 +49,7 @@ module.exports = async (req, res) => {
       const masterPath = '/ncc/master-report';
       const masterSignature = generateSignature(timestamp, method, masterPath, secretKey);
       
-      const masterResponse = await axios.get(`https://api.naver.com${masterPath}`, {
+      const masterResponse = await axios.get(`${BASE_URL}${masterPath}`, {
         params: {
           fields: JSON.stringify([
             'impCnt',
@@ -64,9 +65,9 @@ module.exports = async (req, res) => {
         },
         headers: {
           'X-API-KEY': apiKey,
-          'X-Customer': customerId,
-          'X-Timestamp': timestamp,
-          'X-Signature': masterSignature,
+          'X-CUSTOMER': customerId,
+          'X-TIMESTAMP': timestamp,
+          'X-SIGNATURE': masterSignature,
           'Content-Type': 'application/json; charset=UTF-8'
         }
       });
@@ -88,7 +89,7 @@ module.exports = async (req, res) => {
       const statPath = '/ncc/stat-reports';
       const statSignature = generateSignature(timestamp, method, statPath, secretKey);
       
-      const statResponse = await axios.get(`https://api.naver.com${statPath}`, {
+      const statResponse = await axios.get(`${BASE_URL}${statPath}`, {
         params: {
           ids: `cus-${customerId}`,
           fields: JSON.stringify([
@@ -106,9 +107,9 @@ module.exports = async (req, res) => {
         },
         headers: {
           'X-API-KEY': apiKey,
-          'X-Customer': customerId,
-          'X-Timestamp': timestamp,
-          'X-Signature': statSignature,
+          'X-CUSTOMER': customerId,
+          'X-TIMESTAMP': timestamp,
+          'X-SIGNATURE': statSignature,
           'Content-Type': 'application/json; charset=UTF-8'
         }
       });
@@ -133,7 +134,6 @@ module.exports = async (req, res) => {
       source = 'masterReport';
       const data = results.masterReport.data;
       
-      // MasterReport는 전체 합산 데이터
       if (data) {
         campaignStats.push({
           campaignId: 'total',
@@ -151,7 +151,6 @@ module.exports = async (req, res) => {
       source = 'statReports';
       const data = results.statReports.data;
       
-      // StatReports 파싱
       if (data && Array.isArray(data)) {
         for (const item of data) {
           campaignStats.push({
