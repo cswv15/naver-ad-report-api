@@ -41,122 +41,125 @@ module.exports = async (req, res) => {
     // STEP 1: Report Job 등록 (POST)
     const postSignature = generateSignature(timestamp, 'POST', API_PATH, secretKey);
     
-    const reportJobRequest = {
-      reportTp: 'AD', // Ad Performance Report
-      statDt: startDate,
-      statEdDt: endDate,
-      timeUnit: 'DAY',
-      datePreset: 'CUSTOM'
-    };
-
-    const createResponse = await axios.post(`${BASE_URL}${API_PATH}`, reportJobRequest, {
-      headers: {
-        'X-API-KEY': apiKey,
-        'X-CUSTOMER': customerId,
-        'X-TIMESTAMP': timestamp,
-        'X-SIGNATURE': postSignature,
-        'Content-Type': 'application/json; charset=UTF-8'
+    // 여러 Report Type 시도
+    const reportTypes = [
+      {
+        name: 'AD Performance Report',
+        config: {
+          reportTp: 'AD',
+          statDt: startDate,
+          statEdDt: endDate
+        }
+      },
+      {
+        name: 'AD Detail Report',
+        config: {
+          reportTp: 'AD_DETAIL',
+          statDt: startDate,
+          statEdDt: endDate
+        }
+      },
+      {
+        name: 'Cost Report',
+        config: {
+          reportTp: 'AD_COST',
+          statDt: startDate,
+          statEdDt: endDate
+        }
       }
-    });
+    ];
 
-    const reportJobId = createResponse.data.reportJobId || createResponse.data.id;
+    const results = [];
 
-    if (!reportJobId) {
-      return res.status(500).json({
-        success: false,
-        error: 'Report Job ID not found in response',
-        response: createResponse.data
-      });
-    }
-
-    // STEP 2: Report Job 상태 확인 및 다운로드
-    let attempts = 0;
-    const maxAttempts = 10;
-    let reportData = null;
-
-    while (attempts < maxAttempts) {
-      attempts++;
-      
-      const getTimestamp = Date.now().toString();
-      const getPath = `${API_PATH}/${reportJobId}`;
-      const getSignature = generateSignature(getTimestamp, 'GET', getPath, secretKey);
-
+    for (const reportType of reportTypes) {
       try {
-        const getResponse = await axios.get(`${BASE_URL}${getPath}`, {
+        const createTimestamp = Date.now().toString();
+        const createSignature = generateSignature(createTimestamp, 'POST', API_PATH, secretKey);
+
+        const createResponse = await axios.post(`${BASE_URL}${API_PATH}`, reportType.config, {
           headers: {
             'X-API-KEY': apiKey,
             'X-CUSTOMER': customerId,
-            'X-TIMESTAMP': getTimestamp,
-            'X-SIGNATURE': getSignature,
+            'X-TIMESTAMP': createTimestamp,
+            'X-SIGNATURE': createSignature,
             'Content-Type': 'application/json; charset=UTF-8'
           }
         });
 
-        const status = getResponse.data.status;
+        const reportJobId = createResponse.data.reportJobId || createResponse.data.id;
 
-        if (status === 'COMPLETE' || status === 'DONE') {
-          // 리포트 완성!
-          reportData = getResponse.data;
-          break;
-        } else if (status === 'FAILED' || status === 'ERROR') {
-          return res.status(500).json({
-            success: false,
-            error: 'Report generation failed',
-            details: getResponse.data
-          });
+        results.push({
+          type: reportType.name,
+          status: 'JOB_CREATED',
+          reportJobId: reportJobId,
+          response: createResponse.data
+        });
+
+        // Job 생성 성공하면 바로 상태 확인
+        if (reportJobId) {
+          // 3초 대기 (리포트 생성 시간)
+          await new Promise(resolve => setTimeout(resolve, 3000));
+
+          const getTimestamp = Date.now().toString();
+          const getPath = `${API_PATH}/${reportJobId}`;
+          const getSignature = generateSignature(getTimestamp, 'GET', getPath, secretKey);
+
+          try {
+            const getResponse = await axios.get(`${BASE_URL}${getPath}`, {
+              headers: {
+                'X-API-KEY': apiKey,
+                'X-CUSTOMER': customerId,
+                'X-TIMESTAMP': getTimestamp,
+                'X-SIGNATURE': getSignature,
+                'Content-Type': 'application/json; charset=UTF-8'
+              }
+            });
+
+            results[results.length - 1].jobStatus = getResponse.data.status;
+            results[results.length - 1].jobData = getResponse.data;
+
+            // 성공한 리포트가 있으면 즉시 반환
+            if (getResponse.data.status === 'COMPLETE' || getResponse.data.downloadUrl) {
+              return res.status(200).json({
+                success: true,
+                period: {
+                  year: year,
+                  month: month,
+                  startDate: startDate,
+                  endDate: endDate
+                },
+                reportType: reportType.name,
+                reportJobId: reportJobId,
+                downloadUrl: getResponse.data.downloadUrl,
+                data: getResponse.data,
+                allAttempts: results
+              });
+            }
+          } catch (getError) {
+            results[results.length - 1].jobError = getError.response?.data || getError.message;
+          }
         }
 
-        // 아직 처리 중이면 2초 대기
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-      } catch (error) {
-        // 에러 무시하고 재시도
-        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (createError) {
+        results.push({
+          type: reportType.name,
+          status: 'JOB_FAILED',
+          error: createError.response?.data || createError.message
+        });
       }
     }
 
-    if (!reportData) {
-      return res.status(500).json({
-        success: false,
-        error: 'Report generation timeout',
-        attempts: attempts
-      });
-    }
-
-    // STEP 3: 데이터 파싱
-    const campaignStats = [];
-    const csvData = reportData.downloadUrl || reportData.data;
-
-    // CSV 다운로드 URL이 있는 경우
-    if (reportData.downloadUrl) {
-      // CSV 파싱은 클라이언트에서 처리하도록 URL만 반환
-      return res.status(200).json({
-        success: true,
-        period: {
-          year: year,
-          month: month,
-          startDate: startDate,
-          endDate: endDate
-        },
-        reportJobId: reportJobId,
-        downloadUrl: reportData.downloadUrl,
-        status: reportData.status,
-        message: 'Report ready for download'
-      });
-    }
-
-    // 데이터가 직접 있는 경우
+    // 모든 시도 결과 반환
     return res.status(200).json({
-      success: true,
+      success: false,
+      message: 'All report types tested',
       period: {
         year: year,
         month: month,
         startDate: startDate,
         endDate: endDate
       },
-      reportJobId: reportJobId,
-      data: reportData,
-      message: 'Report generated successfully'
+      results: results
     });
 
   } catch (error) {
