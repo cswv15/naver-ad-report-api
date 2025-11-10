@@ -46,11 +46,11 @@ module.exports = async (req, res) => {
         const timestamp = Date.now().toString();
         const postSignature = generateSignature(timestamp, 'POST', API_PATH, secretKey);
         
-        const reportJobRequest = {
-          reportTp: reportTp,
-          statDt: startDate,
-          statEdDt: endDate
-        };
+const reportJobRequest = {
+  reportTp: reportTp,
+  statDt: `${startDate}T00:00:00Z`,
+  statEdDt: `${endDate}T23:59:59Z`
+};
 
         const createResponse = await axios.post(`${BASE_URL}${API_PATH}`, reportJobRequest, {
           headers: {
