@@ -38,128 +38,97 @@ module.exports = async (req, res) => {
     const API_PATH = '/stat-reports';
     const timestamp = Date.now().toString();
 
-    // STEP 1: Report Job 등록 (POST)
+    // StatReport Job 생성 (올바른 형식)
     const postSignature = generateSignature(timestamp, 'POST', API_PATH, secretKey);
     
-    // 여러 Report Type 시도
-    const reportTypes = [
-      {
-        name: 'AD Performance Report',
-        config: {
-          reportTp: 'AD',
-          statDt: startDate,
-          statEdDt: endDate
-        }
-      },
-      {
-        name: 'AD Detail Report',
-        config: {
-          reportTp: 'AD_DETAIL',
-          statDt: startDate,
-          statEdDt: endDate
-        }
-      },
-      {
-        name: 'Cost Report',
-        config: {
-          reportTp: 'AD_COST',
-          statDt: startDate,
-          statEdDt: endDate
-        }
+    const reportJobRequest = {
+      item: 'AD',  // ✅ "item" 키 사용!
+      statDt: startDate,
+      statEdDt: endDate
+    };
+
+    const createResponse = await axios.post(`${BASE_URL}${API_PATH}`, reportJobRequest, {
+      headers: {
+        'X-API-KEY': apiKey,
+        'X-CUSTOMER': customerId,
+        'X-TIMESTAMP': timestamp,
+        'X-SIGNATURE': postSignature,
+        'Content-Type': 'application/json; charset=UTF-8'
       }
-    ];
+    });
 
-    const results = [];
+    const reportJobId = createResponse.data.id;
+    let status = createResponse.data.status;
 
-    for (const reportType of reportTypes) {
-      try {
-        const createTimestamp = Date.now().toString();
-        const createSignature = generateSignature(createTimestamp, 'POST', API_PATH, secretKey);
+    if (!reportJobId) {
+      return res.status(500).json({
+        success: false,
+        error: 'Report Job ID not found',
+        response: createResponse.data
+      });
+    }
 
-        const createResponse = await axios.post(`${BASE_URL}${API_PATH}`, reportType.config, {
-          headers: {
-            'X-API-KEY': apiKey,
-            'X-CUSTOMER': customerId,
-            'X-TIMESTAMP': createTimestamp,
-            'X-SIGNATURE': createSignature,
-            'Content-Type': 'application/json; charset=UTF-8'
-          }
-        });
+    // Report 완료 대기
+    let attempts = 0;
+    const maxAttempts = 20;
 
-        const reportJobId = createResponse.data.reportJobId || createResponse.data.id;
+    while ((status === 'REGIST' || status === 'RUNNING') && attempts < maxAttempts) {
+      attempts++;
+      await new Promise(resolve => setTimeout(resolve, 3000));
 
-        results.push({
-          type: reportType.name,
-          status: 'JOB_CREATED',
-          reportJobId: reportJobId,
-          response: createResponse.data
-        });
+      const getTimestamp = Date.now().toString();
+      const getPath = `${API_PATH}/${reportJobId}`;
+      const getSignature = generateSignature(getTimestamp, 'GET', getPath, secretKey);
 
-        // Job 생성 성공하면 바로 상태 확인
-        if (reportJobId) {
-          // 3초 대기 (리포트 생성 시간)
-          await new Promise(resolve => setTimeout(resolve, 3000));
-
-          const getTimestamp = Date.now().toString();
-          const getPath = `${API_PATH}/${reportJobId}`;
-          const getSignature = generateSignature(getTimestamp, 'GET', getPath, secretKey);
-
-          try {
-            const getResponse = await axios.get(`${BASE_URL}${getPath}`, {
-              headers: {
-                'X-API-KEY': apiKey,
-                'X-CUSTOMER': customerId,
-                'X-TIMESTAMP': getTimestamp,
-                'X-SIGNATURE': getSignature,
-                'Content-Type': 'application/json; charset=UTF-8'
-              }
-            });
-
-            results[results.length - 1].jobStatus = getResponse.data.status;
-            results[results.length - 1].jobData = getResponse.data;
-
-            // 성공한 리포트가 있으면 즉시 반환
-            if (getResponse.data.status === 'COMPLETE' || getResponse.data.downloadUrl) {
-              return res.status(200).json({
-                success: true,
-                period: {
-                  year: year,
-                  month: month,
-                  startDate: startDate,
-                  endDate: endDate
-                },
-                reportType: reportType.name,
-                reportJobId: reportJobId,
-                downloadUrl: getResponse.data.downloadUrl,
-                data: getResponse.data,
-                allAttempts: results
-              });
-            }
-          } catch (getError) {
-            results[results.length - 1].jobError = getError.response?.data || getError.message;
-          }
+      const getResponse = await axios.get(`${BASE_URL}${getPath}`, {
+        headers: {
+          'X-API-KEY': apiKey,
+          'X-CUSTOMER': customerId,
+          'X-TIMESTAMP': getTimestamp,
+          'X-SIGNATURE': getSignature,
+          'Content-Type': 'application/json; charset=UTF-8'
         }
+      });
 
-      } catch (createError) {
-        results.push({
-          type: reportType.name,
-          status: 'JOB_FAILED',
-          error: createError.response?.data || createError.message
+      status = getResponse.data.status;
+
+      if (status === 'BUILT') {
+        return res.status(200).json({
+          success: true,
+          period: {
+            year: year,
+            month: month,
+            startDate: startDate,
+            endDate: endDate
+          },
+          reportJobId: reportJobId,
+          downloadUrl: getResponse.data.downloadUrl,
+          status: status,
+          message: 'Ad performance report ready'
+        });
+      } else if (status === 'ERROR') {
+        return res.status(500).json({
+          success: false,
+          error: 'Report generation failed',
+          status: status,
+          period: { startDate, endDate }
+        });
+      } else if (status === 'NONE') {
+        return res.status(200).json({
+          success: false,
+          message: 'No data available for this period',
+          status: status,
+          period: { startDate, endDate }
         });
       }
     }
 
-    // 모든 시도 결과 반환
-    return res.status(200).json({
+    return res.status(500).json({
       success: false,
-      message: 'All report types tested',
-      period: {
-        year: year,
-        month: month,
-        startDate: startDate,
-        endDate: endDate
-      },
-      results: results
+      error: 'Timeout waiting for report',
+      attempts: attempts,
+      lastStatus: status,
+      period: { startDate, endDate }
     });
 
   } catch (error) {
