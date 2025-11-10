@@ -39,7 +39,7 @@ module.exports = async (req, res) => {
 
     // 네이버 광고 API 설정
     const BASE_URL = 'https://api.naver.com';
-    const API_PATH = `/stats`;
+    const API_PATH = '/ncc/stats';
     const timestamp = Date.now().toString();
     const method = 'GET';
     
@@ -48,13 +48,21 @@ module.exports = async (req, res) => {
     // 통계 API 호출 (캠페인별)
     const statsUrl = `${BASE_URL}${API_PATH}`;
     const params = {
-      nccCampaignId: '', // 전체 캠페인
-      datePreset: 'CUSTOM',
-      startDate: startDate,
-      endDate: endDate,
-      timeUnit: 'MONTH',
-      breakdown: 'CAMPAIGN',
-      fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt', 'ctr', 'cpc'])
+      ids: customerId,
+      timeRange: JSON.stringify({
+        since: startDate,
+        until: endDate
+      }),
+      timeIncrement: 1,
+      breakdown: 'campaign',
+      fields: JSON.stringify([
+        'impCnt',
+        'clkCnt',
+        'salesAmt',
+        'ctr',
+        'cpc',
+        'avgRnk'
+      ])
     };
 
     const response = await axios.get(statsUrl, {
@@ -64,7 +72,7 @@ module.exports = async (req, res) => {
         'X-Customer': customerId,
         'X-Timestamp': timestamp,
         'X-Signature': signature,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json; charset=UTF-8'
       }
     });
 
@@ -74,13 +82,14 @@ module.exports = async (req, res) => {
     if (response.data && response.data.data) {
       for (const item of response.data.data) {
         campaignStats.push({
-          campaignId: item.nccCampaignId || 'unknown',
+          campaignId: item.id || 'unknown',
           campaignName: item.name || 'Unknown Campaign',
           cost: parseInt(item.salesAmt) || 0,
           clicks: parseInt(item.clkCnt) || 0,
           impressions: parseInt(item.impCnt) || 0,
           ctr: parseFloat(item.ctr) || 0,
-          cpc: parseInt(item.cpc) || 0
+          cpc: parseInt(item.cpc) || 0,
+          avgRank: parseFloat(item.avgRnk) || 0
         });
       }
     }
@@ -95,7 +104,8 @@ module.exports = async (req, res) => {
       },
       campaigns: campaignStats,
       totalCost: campaignStats.reduce((sum, c) => sum + c.cost, 0),
-      totalClicks: campaignStats.reduce((sum, c) => sum + c.clicks, 0)
+      totalClicks: campaignStats.reduce((sum, c) => sum + c.clicks, 0),
+      totalImpressions: campaignStats.reduce((sum, c) => sum + c.impressions, 0)
     });
 
   } catch (error) {
