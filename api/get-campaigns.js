@@ -29,84 +29,90 @@ module.exports = async (req, res) => {
     const API_PATH = '/master-reports';
     const timestamp = Date.now().toString();
 
-    // STEP 1: MasterReport Job 생성 (Campaign 데이터)
-    const postSignature = generateSignature(timestamp, 'POST', API_PATH, secretKey);
-    
-    const reportJobRequest = {
-      reportTp: 'Campaign' // Campaign Master
-    };
+    // 여러 Report Type 시도
+    const reportTypes = ['Campaign', 'Adgroup', 'Keyword'];
+    const results = [];
 
-    const createResponse = await axios.post(`${BASE_URL}${API_PATH}`, reportJobRequest, {
-      headers: {
-        'X-API-KEY': apiKey,
-        'X-CUSTOMER': customerId,
-        'X-TIMESTAMP': timestamp,
-        'X-SIGNATURE': postSignature,
-        'Content-Type': 'application/json; charset=UTF-8'
-      }
-    });
-
-    const reportJobId = createResponse.data.id;
-
-    if (!reportJobId) {
-      return res.status(500).json({
-        success: false,
-        error: 'Report Job ID not found',
-        response: createResponse.data
-      });
-    }
-
-    // STEP 2: Report 상태 확인
-    let attempts = 0;
-    const maxAttempts = 10;
-
-    while (attempts < maxAttempts) {
-      attempts++;
-      
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      const getTimestamp = Date.now().toString();
-      const getPath = `${API_PATH}/${reportJobId}`;
-      const getSignature = generateSignature(getTimestamp, 'GET', getPath, secretKey);
-
+    for (const reportTp of reportTypes) {
       try {
-        const getResponse = await axios.get(`${BASE_URL}${getPath}`, {
+        const createTimestamp = Date.now().toString();
+        const createSignature = generateSignature(createTimestamp, 'POST', API_PATH, secretKey);
+        
+        const reportJobRequest = {
+          reportTp: reportTp
+        };
+
+        const createResponse = await axios.post(`${BASE_URL}${API_PATH}`, reportJobRequest, {
           headers: {
             'X-API-KEY': apiKey,
             'X-CUSTOMER': customerId,
-            'X-TIMESTAMP': getTimestamp,
-            'X-SIGNATURE': getSignature,
+            'X-TIMESTAMP': createTimestamp,
+            'X-SIGNATURE': createSignature,
             'Content-Type': 'application/json; charset=UTF-8'
           }
         });
 
-        const status = getResponse.data.status;
+        const reportJobId = createResponse.data.id;
 
-        if (status === 'COMPLETE' || status === 'REGIST') {
-          return res.status(200).json({
-            success: true,
-            reportJobId: reportJobId,
-            downloadUrl: getResponse.data.downloadUrl,
-            data: getResponse.data,
-            message: 'Campaign list ready'
-          });
-        } else if (status === 'FAILED') {
-          return res.status(500).json({
-            success: false,
-            error: 'Report generation failed',
-            details: getResponse.data
-          });
+        results.push({
+          type: reportTp,
+          status: 'JOB_CREATED',
+          reportJobId: reportJobId,
+          createResponse: createResponse.data
+        });
+
+        // Job 생성 성공하면 상태 확인
+        if (reportJobId) {
+          await new Promise(resolve => setTimeout(resolve, 3000));
+
+          const getTimestamp = Date.now().toString();
+          const getPath = `${API_PATH}/${reportJobId}`;
+          const getSignature = generateSignature(getTimestamp, 'GET', getPath, secretKey);
+
+          try {
+            const getResponse = await axios.get(`${BASE_URL}${getPath}`, {
+              headers: {
+                'X-API-KEY': apiKey,
+                'X-CUSTOMER': customerId,
+                'X-TIMESTAMP': getTimestamp,
+                'X-SIGNATURE': getSignature,
+                'Content-Type': 'application/json; charset=UTF-8'
+              }
+            });
+
+            results[results.length - 1].jobStatus = getResponse.data.status;
+            results[results.length - 1].jobData = getResponse.data;
+
+            // 성공하면 즉시 반환
+            if (getResponse.data.status === 'REGIST' || getResponse.data.downloadUrl) {
+              return res.status(200).json({
+                success: true,
+                reportType: reportTp,
+                reportJobId: reportJobId,
+                downloadUrl: getResponse.data.downloadUrl,
+                data: getResponse.data,
+                message: 'Master report ready',
+                allAttempts: results
+              });
+            }
+          } catch (getError) {
+            results[results.length - 1].jobError = getError.response?.data || getError.message;
+          }
         }
 
-      } catch (error) {
-        // 재시도
+      } catch (createError) {
+        results.push({
+          type: reportTp,
+          status: 'JOB_FAILED',
+          error: createError.response?.data || createError.message
+        });
       }
     }
 
-    return res.status(500).json({
+    return res.status(200).json({
       success: false,
-      error: 'Timeout waiting for report',
-      attempts: attempts
+      message: 'All report types tested',
+      results: results
     });
 
   } catch (error) {
