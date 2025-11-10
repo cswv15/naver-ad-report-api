@@ -34,162 +34,81 @@ module.exports = async (req, res) => {
 
     const { startDate, endDate } = formatDate(parseInt(year), parseInt(month));
 
-    // ✅ 올바른 Base URL
     const BASE_URL = 'https://api.searchad.naver.com';
     const timestamp = Date.now().toString();
     const method = 'GET';
     
-    const results = {
-      masterReport: null,
-      statReports: null
-    };
+    // 테스트할 여러 엔드포인트들
+    const endpoints = [
+      '/ncc/master-report',
+      '/ncc/stat-reports',
+      '/master-report',
+      '/stat-reports',
+      '/ncc/stats',
+      '/stats',
+      '/reports',
+      '/ncc/reports'
+    ];
 
-    // 1. MasterReport API 시도
-    try {
-      const masterPath = '/ncc/master-report';
-      const masterSignature = generateSignature(timestamp, method, masterPath, secretKey);
-      
-      const masterResponse = await axios.get(`${BASE_URL}${masterPath}`, {
-        params: {
-          fields: JSON.stringify([
-            'impCnt',
-            'clkCnt',
-            'salesAmt',
-            'ctr',
-            'cpc'
-          ]),
-          timeRange: JSON.stringify({
-            since: startDate,
-            until: endDate
-          })
-        },
-        headers: {
-          'X-API-KEY': apiKey,
-          'X-CUSTOMER': customerId,
-          'X-TIMESTAMP': timestamp,
-          'X-SIGNATURE': masterSignature,
-          'Content-Type': 'application/json; charset=UTF-8'
-        }
-      });
-      
-      results.masterReport = {
-        status: 'SUCCESS',
-        data: masterResponse.data
-      };
-    } catch (error) {
-      results.masterReport = {
-        status: 'FAILED',
-        statusCode: error.response?.status,
-        error: error.response?.data || error.message
-      };
-    }
+    const results = [];
 
-    // 2. StatReports API 시도
-    try {
-      const statPath = '/ncc/stat-reports';
-      const statSignature = generateSignature(timestamp, method, statPath, secretKey);
-      
-      const statResponse = await axios.get(`${BASE_URL}${statPath}`, {
-        params: {
-          ids: `cus-${customerId}`,
-          fields: JSON.stringify([
-            'impCnt',
-            'clkCnt',
-            'salesAmt',
-            'ctr',
-            'cpc'
-          ]),
-          timeRange: JSON.stringify({
-            since: startDate,
-            until: endDate
-          }),
-          breakdown: 'nccCampaignId'
-        },
-        headers: {
-          'X-API-KEY': apiKey,
-          'X-CUSTOMER': customerId,
-          'X-TIMESTAMP': timestamp,
-          'X-SIGNATURE': statSignature,
-          'Content-Type': 'application/json; charset=UTF-8'
-        }
-      });
-      
-      results.statReports = {
-        status: 'SUCCESS',
-        data: statResponse.data
-      };
-    } catch (error) {
-      results.statReports = {
-        status: 'FAILED',
-        statusCode: error.response?.status,
-        error: error.response?.data || error.message
-      };
-    }
-
-    // 성공한 API가 있으면 데이터 파싱
-    let campaignStats = [];
-    let source = null;
-
-    if (results.masterReport?.status === 'SUCCESS') {
-      source = 'masterReport';
-      const data = results.masterReport.data;
-      
-      if (data) {
-        campaignStats.push({
-          campaignId: 'total',
-          campaignName: '전체 캠페인',
-          cost: parseInt(data.salesAmt || 0),
-          clicks: parseInt(data.clkCnt || 0),
-          impressions: parseInt(data.impCnt || 0),
-          ctr: parseFloat(data.ctr || 0),
-          cpc: parseInt(data.cpc || 0)
+    for (const endpoint of endpoints) {
+      try {
+        const signature = generateSignature(timestamp, method, endpoint, secretKey);
+        
+        const response = await axios.get(`${BASE_URL}${endpoint}`, {
+          params: {
+            ids: `cus-${customerId}`,
+            fields: JSON.stringify(['impCnt', 'clkCnt', 'salesAmt']),
+            timeRange: JSON.stringify({
+              since: startDate,
+              until: endDate
+            })
+          },
+          headers: {
+            'X-API-KEY': apiKey,
+            'X-CUSTOMER': customerId,
+            'X-TIMESTAMP': timestamp,
+            'X-SIGNATURE': signature,
+            'Content-Type': 'application/json; charset=UTF-8'
+          },
+          timeout: 5000
+        });
+        
+        results.push({
+          endpoint: endpoint,
+          status: 'SUCCESS',
+          statusCode: response.status,
+          dataType: Array.isArray(response.data) ? 'array' : typeof response.data,
+          dataLength: Array.isArray(response.data) ? response.data.length : 'N/A',
+          sampleData: response.data
+        });
+      } catch (error) {
+        results.push({
+          endpoint: endpoint,
+          status: 'FAILED',
+          statusCode: error.response?.status || 'TIMEOUT',
+          error: error.response?.data || error.message
         });
       }
     }
 
-    if (results.statReports?.status === 'SUCCESS') {
-      source = 'statReports';
-      const data = results.statReports.data;
-      
-      if (data && Array.isArray(data)) {
-        for (const item of data) {
-          campaignStats.push({
-            campaignId: item.nccCampaignId || item.id || 'unknown',
-            campaignName: item.name || 'Unknown Campaign',
-            cost: parseInt(item.salesAmt || 0),
-            clicks: parseInt(item.clkCnt || 0),
-            impressions: parseInt(item.impCnt || 0),
-            ctr: parseFloat(item.ctr || 0),
-            cpc: parseInt(item.cpc || 0)
-          });
-        }
-      }
-    }
-
     return res.status(200).json({
-      success: true,
-      dataSource: source,
-      period: {
-        year: year,
-        month: month,
-        startDate: startDate,
-        endDate: endDate
-      },
-      campaigns: campaignStats,
-      totalCost: campaignStats.reduce((sum, c) => sum + c.cost, 0),
-      totalClicks: campaignStats.reduce((sum, c) => sum + c.clicks, 0),
-      totalImpressions: campaignStats.reduce((sum, c) => sum + c.impressions, 0),
-      debug: {
-        masterReport: results.masterReport,
-        statReports: results.statReports
+      message: 'Endpoint discovery completed',
+      baseUrl: BASE_URL,
+      period: { startDate, endDate },
+      results: results,
+      summary: {
+        total: results.length,
+        success: results.filter(r => r.status === 'SUCCESS').length,
+        failed: results.filter(r => r.status === 'FAILED').length
       }
     });
 
   } catch (error) {
     return res.status(500).json({
       success: false,
-      error: error.message,
-      details: 'Unknown error occurred'
+      error: error.message
     });
   }
 };
