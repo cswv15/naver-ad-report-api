@@ -35,75 +35,133 @@ module.exports = async (req, res) => {
     const { startDate, endDate } = formatDate(parseInt(year), parseInt(month));
 
     // 네이버 검색광고 API 설정
-    const BASE_URL = 'https://api.naver.com';
-    const API_PATH = '/ncc/stat-reports';
     const timestamp = Date.now().toString();
     const method = 'GET';
     
-    const signature = generateSignature(timestamp, method, API_PATH, secretKey);
+    const results = {
+      masterReport: null,
+      statReports: null
+    };
 
-    // StatReport API 호출
-    const response = await axios.get(`${BASE_URL}${API_PATH}`, {
-      params: {
-        ids: `cus-${customerId}`,
-        fields: JSON.stringify([
-          'impCnt',
-          'clkCnt',
-          'salesAmt',
-          'ctr',
-          'cpc',
-          'avgRnk',
-          'ccnt'
-        ]),
-        timeRange: JSON.stringify({
-          since: startDate,
-          until: endDate
-        }),
-        breakdown: 'nccCampaignId'
-      },
-      headers: {
-        'X-API-KEY': apiKey,
-        'X-Customer': customerId,
-        'X-Timestamp': timestamp,
-        'X-Signature': signature,
-        'Content-Type': 'application/json; charset=UTF-8'
-      }
-    });
+    // 1. MasterReport API 시도
+    try {
+      const masterPath = '/ncc/master-report';
+      const masterSignature = generateSignature(timestamp, method, masterPath, secretKey);
+      
+      const masterResponse = await axios.get(`https://api.naver.com${masterPath}`, {
+        params: {
+          fields: JSON.stringify([
+            'impCnt',
+            'clkCnt',
+            'salesAmt',
+            'ctr',
+            'cpc'
+          ]),
+          timeRange: JSON.stringify({
+            since: startDate,
+            until: endDate
+          })
+        },
+        headers: {
+          'X-API-KEY': apiKey,
+          'X-Customer': customerId,
+          'X-Timestamp': timestamp,
+          'X-Signature': masterSignature,
+          'Content-Type': 'application/json; charset=UTF-8'
+        }
+      });
+      
+      results.masterReport = {
+        status: 'SUCCESS',
+        data: masterResponse.data
+      };
+    } catch (error) {
+      results.masterReport = {
+        status: 'FAILED',
+        statusCode: error.response?.status,
+        error: error.response?.data || error.message
+      };
+    }
 
-    // 응답 데이터 파싱
+    // 2. StatReports API 시도
+    try {
+      const statPath = '/ncc/stat-reports';
+      const statSignature = generateSignature(timestamp, method, statPath, secretKey);
+      
+      const statResponse = await axios.get(`https://api.naver.com${statPath}`, {
+        params: {
+          ids: `cus-${customerId}`,
+          fields: JSON.stringify([
+            'impCnt',
+            'clkCnt',
+            'salesAmt',
+            'ctr',
+            'cpc'
+          ]),
+          timeRange: JSON.stringify({
+            since: startDate,
+            until: endDate
+          }),
+          breakdown: 'nccCampaignId'
+        },
+        headers: {
+          'X-API-KEY': apiKey,
+          'X-Customer': customerId,
+          'X-Timestamp': timestamp,
+          'X-Signature': statSignature,
+          'Content-Type': 'application/json; charset=UTF-8'
+        }
+      });
+      
+      results.statReports = {
+        status: 'SUCCESS',
+        data: statResponse.data
+      };
+    } catch (error) {
+      results.statReports = {
+        status: 'FAILED',
+        statusCode: error.response?.status,
+        error: error.response?.data || error.message
+      };
+    }
+
+    // 성공한 API가 있으면 데이터 파싱
     let campaignStats = [];
-    const rawData = response.data;
+    let source = null;
 
-    // StatReport API는 data 배열을 직접 반환
-    if (rawData && Array.isArray(rawData)) {
-      for (const item of rawData) {
-        // breakdown별로 데이터가 중첩되어 있을 수 있음
-        if (item.data && Array.isArray(item.data)) {
-          for (const subItem of item.data) {
-            campaignStats.push({
-              campaignId: subItem.nccCampaignId || item.id || 'unknown',
-              campaignName: subItem.name || item.name || 'Unknown Campaign',
-              cost: parseInt(subItem.salesAmt || 0),
-              clicks: parseInt(subItem.clkCnt || 0),
-              impressions: parseInt(subItem.impCnt || 0),
-              conversions: parseInt(subItem.ccnt || 0),
-              ctr: parseFloat(subItem.ctr || 0),
-              cpc: parseInt(subItem.cpc || 0),
-              avgRank: parseFloat(subItem.avgRnk || 0)
-            });
-          }
-        } else {
-          // 단일 객체인 경우
+    if (results.masterReport?.status === 'SUCCESS') {
+      source = 'masterReport';
+      const data = results.masterReport.data;
+      
+      // MasterReport는 전체 합산 데이터
+      if (data) {
+        campaignStats.push({
+          campaignId: 'total',
+          campaignName: '전체 캠페인',
+          cost: parseInt(data.salesAmt || 0),
+          clicks: parseInt(data.clkCnt || 0),
+          impressions: parseInt(data.impCnt || 0),
+          ctr: parseFloat(data.ctr || 0),
+          cpc: parseInt(data.cpc || 0)
+        });
+      }
+    }
+
+    if (results.statReports?.status === 'SUCCESS') {
+      source = 'statReports';
+      const data = results.statReports.data;
+      
+      // StatReports 파싱
+      if (data && Array.isArray(data)) {
+        for (const item of data) {
           campaignStats.push({
             campaignId: item.nccCampaignId || item.id || 'unknown',
             campaignName: item.name || 'Unknown Campaign',
             cost: parseInt(item.salesAmt || 0),
             clicks: parseInt(item.clkCnt || 0),
             impressions: parseInt(item.impCnt || 0),
-            conversions: parseInt(item.ccnt || 0),
             ctr: parseFloat(item.ctr || 0),
-            cpc: parseInt(item.cpc || 0),
-            avgRank: parseFloat(item.avgRnk || 0)
+            cpc: parseInt(item.cpc || 0)
           });
         }
       }
@@ -111,6 +169,7 @@ module.exports = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      dataSource: source,
       period: {
         year: year,
         month: month,
@@ -121,27 +180,17 @@ module.exports = async (req, res) => {
       totalCost: campaignStats.reduce((sum, c) => sum + c.cost, 0),
       totalClicks: campaignStats.reduce((sum, c) => sum + c.clicks, 0),
       totalImpressions: campaignStats.reduce((sum, c) => sum + c.impressions, 0),
-      totalConversions: campaignStats.reduce((sum, c) => sum + c.conversions, 0),
       debug: {
-        rawDataType: Array.isArray(rawData) ? 'array' : typeof rawData,
-        rawDataLength: Array.isArray(rawData) ? rawData.length : 0,
-        firstItemKeys: rawData && rawData[0] ? Object.keys(rawData[0]) : [],
-        campaignCount: campaignStats.length
+        masterReport: results.masterReport,
+        statReports: results.statReports
       }
     });
 
   } catch (error) {
-    console.error('API Error:', error.response?.data || error.message);
-    
     return res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || 'Unknown error occurred',
-      requestInfo: {
-        endpoint: '/ncc/stat-reports',
-        customerId: req.body.customerId,
-        idsParam: `cus-${req.body.customerId}`
-      }
+      details: 'Unknown error occurred'
     });
   }
 };
