@@ -1,7 +1,6 @@
 const axios = require('axios');
 const crypto = require('crypto');
 
-// 네이버 광고 API 인증 시그니처 생성
 function generateSignature(timestamp, method, uri, secretKey) {
   const message = `${timestamp}.${method}.${uri}`;
   const signature = crypto
@@ -11,7 +10,6 @@ function generateSignature(timestamp, method, uri, secretKey) {
   return signature;
 }
 
-// 날짜 포맷 함수 (YYYY-MM-DD)
 function formatDate(year, month) {
   const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
   const lastDay = new Date(year, month, 0).getDate();
@@ -20,7 +18,6 @@ function formatDate(year, month) {
 }
 
 module.exports = async (req, res) => {
-  // CORS 프리플라이트 처리
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
@@ -37,18 +34,16 @@ module.exports = async (req, res) => {
 
     const { startDate, endDate } = formatDate(parseInt(year), parseInt(month));
 
-    // 네이버 광고 API 설정
+    // 네이버 검색광고 API 설정
     const BASE_URL = 'https://api.naver.com';
-    const API_PATH = '/stat-reports';
+    const API_PATH = '/ncc/stat-reports';
     const timestamp = Date.now().toString();
     const method = 'GET';
     
     const signature = generateSignature(timestamp, method, API_PATH, secretKey);
 
-    // 통계 API 호출
-    const statsUrl = `${BASE_URL}${API_PATH}`;
-    
-    const response = await axios.get(statsUrl, {
+    // StatReport API 호출
+    const response = await axios.get(`${BASE_URL}${API_PATH}`, {
       params: {
         ids: `cus-${customerId}`,
         fields: JSON.stringify([
@@ -57,14 +52,14 @@ module.exports = async (req, res) => {
           'salesAmt',
           'ctr',
           'cpc',
-          'avgRnk'
+          'avgRnk',
+          'ccnt'
         ]),
         timeRange: JSON.stringify({
           since: startDate,
           until: endDate
         }),
-        timeIncrement: 1,
-        breakdown: 'campaign'
+        breakdown: 'nccCampaignId'
       },
       headers: {
         'X-API-KEY': apiKey,
@@ -75,38 +70,42 @@ module.exports = async (req, res) => {
       }
     });
 
-    // 응답 데이터 확인
+    // 응답 데이터 파싱
     let campaignStats = [];
-    let rawData = response.data;
+    const rawData = response.data;
 
-    // 데이터 구조 파싱
+    // StatReport API는 data 배열을 직접 반환
     if (rawData && Array.isArray(rawData)) {
       for (const item of rawData) {
-        campaignStats.push({
-          campaignId: item.id || item.nccCampaignId || 'unknown',
-          campaignName: item.name || item.campaignNm || 'Unknown Campaign',
-          cost: parseInt(item.salesAmt) || 0,
-          clicks: parseInt(item.clkCnt) || 0,
-          impressions: parseInt(item.impCnt) || 0,
-          ctr: parseFloat(item.ctr) || 0,
-          cpc: parseInt(item.cpc) || 0,
-          avgRank: parseFloat(item.avgRnk) || 0
-        });
-      }
-    } else if (rawData && rawData.data) {
-      // data 속성 안에 배열이 있는 경우
-      const dataArray = Array.isArray(rawData.data) ? rawData.data : [rawData.data];
-      for (const item of dataArray) {
-        campaignStats.push({
-          campaignId: item.id || item.nccCampaignId || 'unknown',
-          campaignName: item.name || item.campaignNm || 'Unknown Campaign',
-          cost: parseInt(item.salesAmt) || 0,
-          clicks: parseInt(item.clkCnt) || 0,
-          impressions: parseInt(item.impCnt) || 0,
-          ctr: parseFloat(item.ctr) || 0,
-          cpc: parseInt(item.cpc) || 0,
-          avgRank: parseFloat(item.avgRnk) || 0
-        });
+        // breakdown별로 데이터가 중첩되어 있을 수 있음
+        if (item.data && Array.isArray(item.data)) {
+          for (const subItem of item.data) {
+            campaignStats.push({
+              campaignId: subItem.nccCampaignId || item.id || 'unknown',
+              campaignName: subItem.name || item.name || 'Unknown Campaign',
+              cost: parseInt(subItem.salesAmt || 0),
+              clicks: parseInt(subItem.clkCnt || 0),
+              impressions: parseInt(subItem.impCnt || 0),
+              conversions: parseInt(subItem.ccnt || 0),
+              ctr: parseFloat(subItem.ctr || 0),
+              cpc: parseInt(subItem.cpc || 0),
+              avgRank: parseFloat(subItem.avgRnk || 0)
+            });
+          }
+        } else {
+          // 단일 객체인 경우
+          campaignStats.push({
+            campaignId: item.nccCampaignId || item.id || 'unknown',
+            campaignName: item.name || 'Unknown Campaign',
+            cost: parseInt(item.salesAmt || 0),
+            clicks: parseInt(item.clkCnt || 0),
+            impressions: parseInt(item.impCnt || 0),
+            conversions: parseInt(item.ccnt || 0),
+            ctr: parseFloat(item.ctr || 0),
+            cpc: parseInt(item.cpc || 0),
+            avgRank: parseFloat(item.avgRnk || 0)
+          });
+        }
       }
     }
 
@@ -122,7 +121,13 @@ module.exports = async (req, res) => {
       totalCost: campaignStats.reduce((sum, c) => sum + c.cost, 0),
       totalClicks: campaignStats.reduce((sum, c) => sum + c.clicks, 0),
       totalImpressions: campaignStats.reduce((sum, c) => sum + c.impressions, 0),
-      rawResponse: rawData // 디버깅용
+      totalConversions: campaignStats.reduce((sum, c) => sum + c.conversions, 0),
+      debug: {
+        rawDataType: Array.isArray(rawData) ? 'array' : typeof rawData,
+        rawDataLength: Array.isArray(rawData) ? rawData.length : 0,
+        firstItemKeys: rawData && rawData[0] ? Object.keys(rawData[0]) : [],
+        campaignCount: campaignStats.length
+      }
     });
 
   } catch (error) {
@@ -131,7 +136,12 @@ module.exports = async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || 'Unknown error occurred'
+      details: error.response?.data || 'Unknown error occurred',
+      requestInfo: {
+        endpoint: '/ncc/stat-reports',
+        customerId: req.body.customerId,
+        idsParam: `cus-${req.body.customerId}`
+      }
     });
   }
 };
