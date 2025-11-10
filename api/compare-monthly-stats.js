@@ -17,11 +17,14 @@ function formatDate(year, month) {
   return { startDate, endDate };
 }
 
+function calculateChange(oldVal, newVal) {
+  if (oldVal === 0) return newVal > 0 ? 100 : 0;
+  return ((newVal - oldVal) / oldVal * 100).toFixed(2);
+}
+
 async function getStats(BASE_URL, id, timeRange, apiKey, customerId, secretKey) {
   const timestamp = Date.now().toString();
-  const path = '/stats';  // Query parameter 제외!
-  
-  // 서명 생성 (Query parameter 없이)
+  const path = '/stats';
   const signature = generateSignature(timestamp, 'GET', path, secretKey);
 
   const params = {
@@ -44,6 +47,30 @@ async function getStats(BASE_URL, id, timeRange, apiKey, customerId, secretKey) 
 
     const data = response.data;
     
+    // data 배열에서 일별 데이터 합산
+    if (data.data && Array.isArray(data.data) && data.data.length > 0) {
+      const totals = data.data.reduce((sum, day) => ({
+        salesAmt: sum.salesAmt + (day.salesAmt || 0),
+        clkCnt: sum.clkCnt + (day.clkCnt || 0),
+        impCnt: sum.impCnt + (day.impCnt || 0),
+        ccnt: sum.ccnt + (day.ccnt || 0)
+      }), { salesAmt: 0, clkCnt: 0, impCnt: 0, ccnt: 0 });
+
+      const avgCtr = data.data.reduce((sum, day) => sum + (day.ctr || 0), 0) / data.data.length;
+      const avgCpc = totals.clkCnt > 0 ? Math.round(totals.salesAmt / totals.clkCnt) : 0;
+
+      return {
+        success: true,
+        cost: totals.salesAmt,
+        clicks: totals.clkCnt,
+        impressions: totals.impCnt,
+        conversions: totals.ccnt,
+        ctr: parseFloat(avgCtr.toFixed(2)),
+        cpc: avgCpc
+      };
+    }
+
+    // summaryStat 방식 (fallback)
     let stats = null;
     if (data.summaryStat && data.summaryStat.data && data.summaryStat.data.length > 0) {
       stats = data.summaryStat.data[0];
@@ -59,15 +86,13 @@ async function getStats(BASE_URL, id, timeRange, apiKey, customerId, secretKey) 
         impressions: parseInt(stats.impCnt || 0),
         conversions: parseInt(stats.ccnt || 0),
         ctr: parseFloat(stats.ctr || 0),
-        cpc: parseInt(stats.cpc || 0),
-        rawData: data
+        cpc: parseInt(stats.cpc || 0)
       };
     }
 
     return { 
       success: false,
       reason: 'No stats in response',
-      rawData: data,
       cost: 0, clicks: 0, impressions: 0, conversions: 0, ctr: 0, cpc: 0
     };
 
@@ -117,43 +142,111 @@ module.exports = async (req, res) => {
     });
 
     const campaigns = campaignsResponse.data;
+    const results = [];
 
-    // 첫 번째 캠페인 테스트
-    const testCampaign = campaigns[0];
-    const campaignId = testCampaign.nccCampaignId;
+    // 모든 캠페인 조회
+    for (const campaign of campaigns) {
+      const campaignId = campaign.nccCampaignId;
 
-    const stats1 = await getStats(
-      BASE_URL,
-      campaignId,
-      { since: period1.startDate, until: period1.endDate },
-      apiKey,
-      customerId,
-      secretKey
-    );
+      const stats1 = await getStats(
+        BASE_URL,
+        campaignId,
+        { since: period1.startDate, until: period1.endDate },
+        apiKey,
+        customerId,
+        secretKey
+      );
 
-    await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 100));
 
-    const stats2 = await getStats(
-      BASE_URL,
-      campaignId,
-      { since: period2.startDate, until: period2.endDate },
-      apiKey,
-      customerId,
-      secretKey
-    );
+      const stats2 = await getStats(
+        BASE_URL,
+        campaignId,
+        { since: period2.startDate, until: period2.endDate },
+        apiKey,
+        customerId,
+        secretKey
+      );
+
+      results.push({
+        campaignId: campaignId,
+        campaignName: campaign.name,
+        period1: {
+          year: year1,
+          month: month1,
+          cost: stats1.cost,
+          clicks: stats1.clicks,
+          impressions: stats1.impressions,
+          conversions: stats1.conversions,
+          ctr: stats1.ctr,
+          cpc: stats1.cpc
+        },
+        period2: {
+          year: year2,
+          month: month2,
+          cost: stats2.cost,
+          clicks: stats2.clicks,
+          impressions: stats2.impressions,
+          conversions: stats2.conversions,
+          ctr: stats2.ctr,
+          cpc: stats2.cpc
+        },
+        comparison: {
+          costChange: stats2.cost - stats1.cost,
+          costChangePercent: calculateChange(stats1.cost, stats2.cost),
+          clicksChange: stats2.clicks - stats1.clicks,
+          clicksChangePercent: calculateChange(stats1.clicks, stats2.clicks),
+          impressionsChange: stats2.impressions - stats1.impressions,
+          impressionsChangePercent: calculateChange(stats1.impressions, stats2.impressions),
+          conversionsChange: stats2.conversions - stats1.conversions,
+          conversionsChangePercent: calculateChange(stats1.conversions, stats2.conversions)
+        }
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    // 전체 합계
+    const totalPeriod1 = results.reduce((sum, c) => ({
+      cost: sum.cost + c.period1.cost,
+      clicks: sum.clicks + c.period1.clicks,
+      impressions: sum.impressions + c.period1.impressions,
+      conversions: sum.conversions + c.period1.conversions
+    }), { cost: 0, clicks: 0, impressions: 0, conversions: 0 });
+
+    const totalPeriod2 = results.reduce((sum, c) => ({
+      cost: sum.cost + c.period2.cost,
+      clicks: sum.clicks + c.period2.clicks,
+      impressions: sum.impressions + c.period2.impressions,
+      conversions: sum.conversions + c.period2.conversions
+    }), { cost: 0, clicks: 0, impressions: 0, conversions: 0 });
 
     return res.status(200).json({
       success: true,
-      debug: true,
-      period1: { year: year1, month: month1, dateRange: `${period1.startDate} ~ ${period1.endDate}` },
-      period2: { year: year2, month: month2, dateRange: `${period2.startDate} ~ ${period2.endDate}` },
-      testCampaign: {
-        id: campaignId,
-        name: testCampaign.name
+      period1: {
+        year: year1,
+        month: month1,
+        dateRange: `${period1.startDate} ~ ${period1.endDate}`
       },
-      stats1Response: stats1,
-      stats2Response: stats2,
-      message: 'Testing without query string in signature (like KeywordPurple)'
+      period2: {
+        year: year2,
+        month: month2,
+        dateRange: `${period2.startDate} ~ ${period2.endDate}`
+      },
+      totalCampaigns: campaigns.length,
+      campaigns: results,
+      totals: {
+        period1: totalPeriod1,
+        period2: totalPeriod2,
+        comparison: {
+          costChange: totalPeriod2.cost - totalPeriod1.cost,
+          costChangePercent: calculateChange(totalPeriod1.cost, totalPeriod2.cost),
+          clicksChange: totalPeriod2.clicks - totalPeriod1.clicks,
+          clicksChangePercent: calculateChange(totalPeriod1.clicks, totalPeriod2.clicks),
+          impressionsChange: totalPeriod2.impressions - totalPeriod1.impressions,
+          impressionsChangePercent: calculateChange(totalPeriod1.impressions, totalPeriod2.impressions)
+        }
+      }
     });
 
   } catch (error) {
