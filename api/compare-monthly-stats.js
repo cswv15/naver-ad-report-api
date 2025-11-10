@@ -5,6 +5,7 @@ function generateSignature(timestamp, method, uri, secretKey) {
   const message = `${timestamp}.${method}.${uri}`;
   const signature = crypto
     .createHmac('sha256', secretKey)
+    .update(message)
     .digest('base64');
   return signature;
 }
@@ -18,16 +19,24 @@ function formatDate(year, month) {
 
 async function getStats(BASE_URL, id, timeRange, apiKey, customerId, secretKey) {
   const timestamp = Date.now().toString();
-  const path = '/stats';
-  const signature = generateSignature(timestamp, 'GET', path, secretKey);
+  
+  // Query parameters
+  const params = {
+    id: id,
+    fields: '["impCnt","clkCnt","salesAmt","ctr","cpc","ccnt"]',
+    timeRange: JSON.stringify(timeRange)
+  };
+
+  // Query string 생성 (서명용)
+  const queryString = new URLSearchParams(params).toString();
+  const pathWithQuery = `/stats?${queryString}`;
+  
+  // 서명 생성 (Query string 포함)
+  const signature = generateSignature(timestamp, 'GET', pathWithQuery, secretKey);
 
   try {
-    const response = await axios.get(`${BASE_URL}${path}`, {
-      params: {
-        id: id,
-        fields: '["impCnt","clkCnt","salesAmt","ctr","cpc","ccnt"]',
-        timeRange: JSON.stringify(timeRange)
-      },
+    const response = await axios.get(`${BASE_URL}/stats`, {
+      params: params,
       headers: {
         'X-API-KEY': apiKey,
         'X-CUSTOMER': customerId,
@@ -39,7 +48,6 @@ async function getStats(BASE_URL, id, timeRange, apiKey, customerId, secretKey) 
 
     const data = response.data;
     
-    // summaryStat 또는 dailyStat에서 데이터 추출
     let stats = null;
     if (data.summaryStat && data.summaryStat.data && data.summaryStat.data.length > 0) {
       stats = data.summaryStat.data[0];
@@ -55,8 +63,7 @@ async function getStats(BASE_URL, id, timeRange, apiKey, customerId, secretKey) 
         impressions: parseInt(stats.impCnt || 0),
         conversions: parseInt(stats.ccnt || 0),
         ctr: parseFloat(stats.ctr || 0),
-        cpc: parseInt(stats.cpc || 0),
-        rawData: data  // 원본 데이터 포함
+        cpc: parseInt(stats.cpc || 0)
       };
     }
 
@@ -97,7 +104,7 @@ module.exports = async (req, res) => {
 
     const BASE_URL = 'https://api.searchad.naver.com';
 
-    // STEP 1: 캠페인 목록 조회
+    // 캠페인 목록 조회
     const ts1 = Date.now().toString();
     const campaignsPath = '/ncc/campaigns';
     const sig1 = generateSignature(ts1, 'GET', campaignsPath, secretKey);
@@ -113,9 +120,8 @@ module.exports = async (req, res) => {
     });
 
     const campaigns = campaignsResponse.data;
-    const results = [];
 
-    // STEP 2: 첫 번째 캠페인만 테스트
+    // 첫 번째 캠페인 테스트
     const testCampaign = campaigns[0];
     const campaignId = testCampaign.nccCampaignId;
 
@@ -150,7 +156,7 @@ module.exports = async (req, res) => {
       },
       stats1Response: stats1,
       stats2Response: stats2,
-      message: 'Debug mode - showing detailed response'
+      message: 'Testing with query string in signature'
     });
 
   } catch (error) {
