@@ -26,12 +26,12 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const { customerId, secretKey, year, month } = req.body;
+    const { customerId, apiKey, secretKey, year, month } = req.body;
 
-    if (!customerId || !secretKey || !year || !month) {
+    if (!customerId || !apiKey || !secretKey || !year || !month) {
       return res.status(400).json({
         error: 'Missing required parameters',
-        required: ['customerId', 'secretKey', 'year', 'month']
+        required: ['customerId', 'apiKey', 'secretKey', 'year', 'month']
       });
     }
 
@@ -45,30 +45,28 @@ module.exports = async (req, res) => {
     
     const signature = generateSignature(timestamp, method, API_PATH, secretKey);
 
-    // 통계 API 호출 (캠페인별)
+    // 통계 API 호출
     const statsUrl = `${BASE_URL}${API_PATH}`;
-    const params = {
-      ids: customerId,
-      timeRange: JSON.stringify({
-        since: startDate,
-        until: endDate
-      }),
-      timeIncrement: 1,
-      breakdown: 'campaign',
-      fields: JSON.stringify([
-        'impCnt',
-        'clkCnt',
-        'salesAmt',
-        'ctr',
-        'cpc',
-        'avgRnk'
-      ])
-    };
-
+    
     const response = await axios.get(statsUrl, {
-      params: params,
+      params: {
+        ids: customerId,
+        timeRange: JSON.stringify({
+          since: startDate,
+          until: endDate
+        }),
+        timeIncrement: 1,
+        breakdown: 'campaign',
+        fields: JSON.stringify([
+          'impCnt',
+          'clkCnt',
+          'salesAmt',
+          'ctr',
+          'cpc'
+        ])
+      },
       headers: {
-        'X-API-KEY': customerId,
+        'X-API-KEY': apiKey,
         'X-Customer': customerId,
         'X-Timestamp': timestamp,
         'X-Signature': signature,
@@ -88,8 +86,7 @@ module.exports = async (req, res) => {
           clicks: parseInt(item.clkCnt) || 0,
           impressions: parseInt(item.impCnt) || 0,
           ctr: parseFloat(item.ctr) || 0,
-          cpc: parseInt(item.cpc) || 0,
-          avgRank: parseFloat(item.avgRnk) || 0
+          cpc: parseInt(item.cpc) || 0
         });
       }
     }
