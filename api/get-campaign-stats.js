@@ -39,7 +39,7 @@ module.exports = async (req, res) => {
 
     // 네이버 광고 API 설정
     const BASE_URL = 'https://api.naver.com';
-    const API_PATH = '/ncc/stats';
+    const API_PATH = '/stat-reports';
     const timestamp = Date.now().toString();
     const method = 'GET';
     
@@ -50,20 +50,21 @@ module.exports = async (req, res) => {
     
     const response = await axios.get(statsUrl, {
       params: {
-        ids: customerId,
-        timeRange: JSON.stringify({
-          since: startDate,
-          until: endDate
-        }),
-        timeIncrement: 1,
-        breakdown: 'campaign',
+        ids: `cus-${customerId}`,
         fields: JSON.stringify([
           'impCnt',
           'clkCnt',
           'salesAmt',
           'ctr',
-          'cpc'
-        ])
+          'cpc',
+          'avgRnk'
+        ]),
+        timeRange: JSON.stringify({
+          since: startDate,
+          until: endDate
+        }),
+        timeIncrement: 1,
+        breakdown: 'campaign'
       },
       headers: {
         'X-API-KEY': apiKey,
@@ -74,19 +75,37 @@ module.exports = async (req, res) => {
       }
     });
 
-    // 캠페인별 데이터 정리
-    const campaignStats = [];
-    
-    if (response.data && response.data.data) {
-      for (const item of response.data.data) {
+    // 응답 데이터 확인
+    let campaignStats = [];
+    let rawData = response.data;
+
+    // 데이터 구조 파싱
+    if (rawData && Array.isArray(rawData)) {
+      for (const item of rawData) {
         campaignStats.push({
-          campaignId: item.id || 'unknown',
-          campaignName: item.name || 'Unknown Campaign',
+          campaignId: item.id || item.nccCampaignId || 'unknown',
+          campaignName: item.name || item.campaignNm || 'Unknown Campaign',
           cost: parseInt(item.salesAmt) || 0,
           clicks: parseInt(item.clkCnt) || 0,
           impressions: parseInt(item.impCnt) || 0,
           ctr: parseFloat(item.ctr) || 0,
-          cpc: parseInt(item.cpc) || 0
+          cpc: parseInt(item.cpc) || 0,
+          avgRank: parseFloat(item.avgRnk) || 0
+        });
+      }
+    } else if (rawData && rawData.data) {
+      // data 속성 안에 배열이 있는 경우
+      const dataArray = Array.isArray(rawData.data) ? rawData.data : [rawData.data];
+      for (const item of dataArray) {
+        campaignStats.push({
+          campaignId: item.id || item.nccCampaignId || 'unknown',
+          campaignName: item.name || item.campaignNm || 'Unknown Campaign',
+          cost: parseInt(item.salesAmt) || 0,
+          clicks: parseInt(item.clkCnt) || 0,
+          impressions: parseInt(item.impCnt) || 0,
+          ctr: parseFloat(item.ctr) || 0,
+          cpc: parseInt(item.cpc) || 0,
+          avgRank: parseFloat(item.avgRnk) || 0
         });
       }
     }
@@ -102,7 +121,8 @@ module.exports = async (req, res) => {
       campaigns: campaignStats,
       totalCost: campaignStats.reduce((sum, c) => sum + c.cost, 0),
       totalClicks: campaignStats.reduce((sum, c) => sum + c.clicks, 0),
-      totalImpressions: campaignStats.reduce((sum, c) => sum + c.impressions, 0)
+      totalImpressions: campaignStats.reduce((sum, c) => sum + c.impressions, 0),
+      rawResponse: rawData // 디버깅용
     });
 
   } catch (error) {
