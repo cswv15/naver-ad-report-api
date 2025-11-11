@@ -261,14 +261,31 @@ module.exports = async (req, res) => {
             clicksChange: p2Total.clicks - p1Total.clicks,
             clicksChangePercent: calculateChange(p1Total.clicks, p2Total.clicks),
             impressionsChange: p2Total.impressions - p1Total.impressions,
-            impressionsChangePercent: calculateChange(p1Total.impressions, p2Total.impressions)
+            impressionsChangePercent: calculateChange(p1Total.impressions, p2Total.impressions),
+            conversionsChange: p2Total.conversions - p1Total.conversions,
+            conversionsChangePercent: calculateChange(p1Total.conversions, p2Total.conversions)
           }
         };
       }
     });
 
+    // 전환 데이터 체크
+    const hasConversions = totalPeriod1.conversions > 0 || totalPeriod2.conversions > 0;
+
+    // 보고서 설정
+    const reportConfig = {
+      showConversions: hasConversions,
+      metricsToShow: hasConversions 
+        ? ['cost', 'clicks', 'impressions', 'conversions', 'cpc', 'ctr', 'conversionRate', 'costPerConversion']
+        : ['cost', 'clicks', 'impressions', 'cpc', 'ctr'],
+      message: hasConversions 
+        ? '전환 데이터가 있습니다' 
+        : '전환 데이터가 없어 노출수/CTR 중심으로 표시합니다'
+    };
+
     return res.status(200).json({
       success: true,
+      reportConfig: reportConfig,
       period1: {
         year: year1,
         month: month1,
@@ -290,19 +307,13 @@ module.exports = async (req, res) => {
           clicksChange: totalPeriod2.clicks - totalPeriod1.clicks,
           clicksChangePercent: calculateChange(totalPeriod1.clicks, totalPeriod2.clicks),
           impressionsChange: totalPeriod2.impressions - totalPeriod1.impressions,
-          impressionsChangePercent: calculateChange(totalPeriod1.impressions, totalPeriod2.impressions)
+          impressionsChangePercent: calculateChange(totalPeriod1.impressions, totalPeriod2.impressions),
+          conversionsChange: totalPeriod2.conversions - totalPeriod1.conversions,
+          conversionsChangePercent: calculateChange(totalPeriod1.conversions, totalPeriod2.conversions)
         }
       },
       byType: byType
     });
 
   } catch (error) {
-    console.error('API Error:', error.response?.data || error.message);
-    
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-      details: error.response?.data || 'Unknown error occurred'
-    });
-  }
-};
+    console.error('API Error:', error.response?.data
