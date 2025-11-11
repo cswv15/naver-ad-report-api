@@ -216,7 +216,6 @@ module.exports = async (req, res) => {
       conversions: sum.conversions + c.period2.conversions
     }), { cost: 0, clicks: 0, impressions: 0, conversions: 0 });
 
-    // 유형별 그룹핑
     const campaignTypes = {
       '01': { name: '파워링크', campaigns: [] },
       '02': { name: '브랜드검색', campaigns: [] },
@@ -232,7 +231,6 @@ module.exports = async (req, res) => {
       }
     });
 
-    // 유형별 합계
     const byType = {};
     Object.keys(campaignTypes).forEach(typeCode => {
       const typeCampaigns = campaignTypes[typeCode].campaigns;
@@ -269,10 +267,8 @@ module.exports = async (req, res) => {
       }
     });
 
-    // 전환 데이터 체크
     const hasConversions = totalPeriod1.conversions > 0 || totalPeriod2.conversions > 0;
 
-    // 보고서 설정
     const reportConfig = {
       showConversions: hasConversions,
       metricsToShow: hasConversions 
@@ -289,12 +285,12 @@ module.exports = async (req, res) => {
       period1: {
         year: year1,
         month: month1,
-        dateRange: `${period1.startDate} ~ ${period1.endDate}`
+        dateRange: period1.startDate + ' ~ ' + period1.endDate
       },
       period2: {
         year: year2,
         month: month2,
-        dateRange: `${period2.startDate} ~ ${period2.endDate}`
+        dateRange: period2.startDate + ' ~ ' + period2.endDate
       },
       totalCampaigns: campaigns.length,
       campaigns: results,
@@ -316,4 +312,12 @@ module.exports = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('API Error:', error.response?.data
+    console.error('API Error:', error.response?.data || error.message);
+    
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.response?.data || 'Unknown error occurred'
+    });
+  }
+};
